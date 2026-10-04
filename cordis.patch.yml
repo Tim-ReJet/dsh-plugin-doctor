@@ -1,0 +1,18 @@
+# dsh-plugin-doctor — the bundle patch.
+#
+# package.json declares `dsh.bundle.patch`, so installing this package into a profile
+# appends this layer to that profile's composed configuration. One row: the host
+# plugin that owns the `plugin_doctor` tool. It injects the `tools` service, which
+# the base bundle provides, so no other row is needed.
+#
+# The config values below are this package's own defaults, written out because a
+# shipped patch row is the deployment's starting point: `path` is audited when the
+# model calls `plugin_doctor` without arguments, and `network` is false so the tool
+# stays offline and read-only unless the caller asks for the topic check.
+- insert:
+    - id: plugin-doctor
+      name: dsh-plugin-doctor
+      config:
+        path: '.'
+        strict: false
+        network: false
