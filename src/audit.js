@@ -15,7 +15,7 @@ import { parseVersion, prereleaseGate } from './semver-gate.js'
 const DAY_MS = 24 * 60 * 60 * 1000
 const DOCS = new Set(['README.md', 'README.en.md', 'README.zh.md', 'LICENSE', 'LICENSE.md', 'CHANGELOG.md', 'package.json', 'cordis.patch.yml', 'screenshots.json'])
 const IMPLEMENTATION_ROOTS = ['src', 'lib', 'bin', 'index.js', 'index.mjs', 'index.cjs', 'index.ts', 'main.js']
-const MARKETING_TERMS = ['best ', 'best-in-class', "world's first", 'worlds first', 'revolutionary', 'blazing', 'lightning-fast', 'ultimate', 'cutting-edge', 'game-changing', 'seamless', 'effortless', 'magical', 'unmatched', 'unleash', 'one-of-a-kind', 'state-of-the-art']
+const MARKETING_TERMS = ['best', 'best-in-class', "world's first", 'worlds first', 'revolutionary', 'blazing', 'lightning-fast', 'ultimate', 'cutting-edge', 'game-changing', 'game changer', 'seamless', 'seamlessly', 'effortless', 'effortlessly', 'magical', 'unmatched', 'unleash', 'one-of-a-kind', 'state-of-the-art', 'amazing', 'powerful', 'next-generation', 'industry-leading', 'supercharge', 'supercharged', 'you will ever need', 'must-have', 'turbocharge']
 const CATEGORIES = ['agi', 'ui', 'usage', 'theme', 'model', 'identity', 'session', 'memory', 'tools', 'wsl', 'browser', 'vision', 'voice', 'docs', 'skill', 'workflow', 'git', 'notify', 'dev', 'security', 'remote', 'market', 'fun']
 
 /**
@@ -69,6 +69,52 @@ export function remoteSlug(root) {
   if (url === null) return null
   const match = /github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(url)
   return match ? `${match[1]}/${match[2]}` : null
+}
+
+/**
+ * Date of the repository's oldest root commit. `git log --reverse -n 1` cannot answer this: git
+ * applies `-n` before `--reverse`, so it returns HEAD.
+ * @param {string} root - repository root.
+ * @returns {string|null} the committer date in ISO form, or null without a readable history.
+ */
+export function firstCommitDate(root) {
+  const roots = git(root, ['rev-list', '--max-parents=0', 'HEAD'])
+  if (roots === null || roots === '') return null
+  const oldestRoot = roots.split('\n').map((line) => line.trim()).filter(Boolean).pop()
+  if (oldestRoot === undefined) return null
+  const date = git(root, ['show', '-s', '--format=%cI', oldestRoot])
+  return date === null || date === '' ? null : date
+}
+
+/** @param {unknown} pkg - a parsed package.json. */
+function declaresBundle(pkg) {
+  if (!pkg || typeof pkg !== 'object') return false
+  const dsh = /** @type {Record<string, unknown>} */ (pkg).dsh
+  if (!dsh || typeof dsh !== 'object') return false
+  const bundle = /** @type {Record<string, unknown>} */ (dsh).bundle
+  return Boolean(bundle && typeof bundle === 'object' && typeof /** @type {Record<string, unknown>} */ (bundle).patch === 'string')
+}
+
+/**
+ * Find the manifest that declares `dsh.bundle`: the root package.json, or a `packages/`,
+ * `plugins/`, or `apps/` subpackage, which is where the directory's CI looks too.
+ * @param {string} root - repository root.
+ * @returns {{directory: string, relative: string}} the manifest directory and its repo-relative path.
+ */
+export function findManifestDirectory(root) {
+  if (declaresBundle(readJson(join(root, 'package.json')).value)) return { directory: root, relative: '.' }
+  for (const parent of ['packages', 'plugins', 'apps']) {
+    const parentDir = join(root, parent)
+    if (!existsSync(parentDir)) continue
+    for (const entry of readdirSync(parentDir).sort()) {
+      const directory = join(parentDir, entry)
+      if (!statSync(directory).isDirectory()) continue
+      if (declaresBundle(readJson(join(directory, 'package.json')).value)) {
+        return { directory, relative: `${parent}/${entry}` }
+      }
+    }
+  }
+  return { directory: root, relative: '.' }
 }
 
 /**
@@ -255,14 +301,16 @@ export function emitEntry(pkg, slug, options = {}) {
   const description = typeof pkg.description === 'string' && pkg.description !== ''
     ? pkg.description.replace(/\s+/g, ' ').trim()
     : 'TODO: one line stating what the plugin does.'
-  const needsQuoting = description.includes(': ')
+  // Always single-quote: a description can start with a YAML indicator (`@`, `&`, `*`, `%`) or carry
+  // ` #`, either of which silently changes or breaks the parse when left bare.
+  const quoted = `'${description.replace(/'/g, "''")}'`
   return [
     `# data/plugins/${file}`,
     `url: ${url}`,
     `name: ${name}`,
     `category: ${category}`,
     'description:',
-    `  en: ${needsQuoting ? `'${description.replace(/'/g, "''")}'` : description}`,
+    `  en: ${quoted}`,
     '',
   ].join('\n')
 }
@@ -289,8 +337,11 @@ export async function auditRepository(root, options = {}) {
   /** @param {Check} check */
   const push = (check) => checks.push(check)
 
-  const packagePath = join(absoluteRoot, 'package.json')
-  const packageRead = existsSync(packagePath) ? readJson(packagePath) : { error: 'package.json does not exist' }
+  const manifest = findManifestDirectory(absoluteRoot)
+  const manifestDir = manifest.directory
+  const where = manifest.relative === '.' ? 'package.json' : `${manifest.relative}/package.json`
+  const packagePath = join(manifestDir, 'package.json')
+  const packageRead = existsSync(packagePath) ? readJson(packagePath) : { error: `${where} does not exist` }
   const pkg = packageRead.value && typeof packageRead.value === 'object'
     ? /** @type {Record<string, unknown>} */ (packageRead.value)
     : null
@@ -300,16 +351,16 @@ export async function auditRepository(root, options = {}) {
       id: 'manifest.package-json',
       level: 'error',
       status: 'fail',
-      title: 'package.json is missing or unparseable',
+      title: `${where} is missing or unparseable`,
       detail: packageRead.error ?? 'unknown error',
-      fix: 'Add a package.json at the repository root declaring "name", "version", and "dsh.bundle".',
+      fix: 'Declare "name", "version", and "dsh.bundle" in the repository root package.json or in a packages/, plugins/, or apps/ subpackage.',
     })
   } else {
     push({
       id: 'manifest.package-json',
       level: 'error',
       status: 'pass',
-      title: 'package.json parses',
+      title: `${where} parses`,
     })
   }
 
@@ -355,8 +406,8 @@ export async function auditRepository(root, options = {}) {
 
   let patchText = null
   if (patchPath) {
-    const absolutePatch = isAbsolute(patchPath) ? patchPath : resolve(absoluteRoot, patchPath)
-    const inside = !relative(absoluteRoot, absolutePatch).startsWith('..')
+    const absolutePatch = isAbsolute(patchPath) ? patchPath : resolve(manifestDir, patchPath)
+    const inside = !relative(manifestDir, absolutePatch).startsWith('..')
     if (!existsSync(absolutePatch) || !statSync(absolutePatch).isFile()) {
       push({
         id: 'manifest.bundle-patch-file',
@@ -388,9 +439,9 @@ export async function auditRepository(root, options = {}) {
           id: 'manifest.bundle-patch-location',
           level: 'warn',
           status: 'fail',
-          title: 'the bundle patch lives outside the repository',
-          detail: `${absolutePatch} is not under ${absoluteRoot}, so it is not in the published package.`,
-          fix: 'Move the patch into the repository and reference it relatively.',
+          title: 'the bundle patch lives outside the package directory',
+          detail: `${absolutePatch} is not under ${manifestDir}, so it is not in the published package.`,
+          fix: 'Move the patch next to package.json and reference it relatively.',
         })
       }
     }
@@ -420,10 +471,9 @@ export async function auditRepository(root, options = {}) {
       const named = scan.rows.filter((row) => row.name !== null)
       const matchesPackage = name !== null && named.some((row) => {
         const rowName = /** @type {string} */ (row.name)
-        return rowName === name
-          || rowName === name.replace(/^@[^/]+\//, '')
-          || rowName.endsWith(`/${name}`)
-          || rowName.includes(name)
+        // The row must name this package exactly, or one of its subpath exports. A row that merely
+        // contains the name ("my-dsh-example-copycat-fork") resolves to a different package.
+        return rowName === name || rowName.startsWith(`${name}/`)
       })
       if (scan.rows.length === 0) {
         push({
@@ -569,7 +619,7 @@ export async function auditRepository(root, options = {}) {
     push({ id: 'manifest.peer-prerelease', level: 'error', status: 'skip', title: 'no parsed package.json' })
   }
 
-  const firstCommit = git(absoluteRoot, ['log', '--reverse', '--format=%cI', '-n', '1'])
+  const firstCommit = firstCommitDate(absoluteRoot)
   if (firstCommit === null || firstCommit === '') {
     push({
       id: 'repo.age',
@@ -603,7 +653,7 @@ export async function auditRepository(root, options = {}) {
     }
   }
 
-  const implementation = pkg ? implementationFiles(absoluteRoot, pkg) : []
+  const implementation = pkg ? implementationFiles(manifestDir, pkg) : []
   if (!pkg) {
     push({ id: 'repo.implementation', level: 'error', status: 'skip', title: 'no parsed package.json' })
   } else if (implementation.length === 0) {
@@ -639,7 +689,10 @@ export async function auditRepository(root, options = {}) {
 
   if (pkg) {
     const description = typeof pkg.description === 'string' ? pkg.description.trim() : ''
-    const marketing = MARKETING_TERMS.filter((term) => description.toLowerCase().includes(term))
+    const marketing = MARKETING_TERMS.filter((term) => new RegExp(
+      `(^|[^a-z])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z]|$)`,
+      'i',
+    ).test(description))
     if (description === '') {
       push({
         id: 'description.substance',
@@ -652,16 +705,24 @@ export async function auditRepository(root, options = {}) {
     } else {
       push({ id: 'description.substance', level: 'error', status: 'pass', title: 'package.json has a description' })
     }
-    if (marketing.length > 0) {
+    if (description === '') {
       push({
         id: 'description.marketing',
-        level: 'warn',
-        status: 'fail',
-        title: `description uses marketing language (${marketing.map((term) => term.trim()).join(', ')})`,
-        fix: 'Descriptions state what the plugin does; every claim is checked against the code.',
+        level: 'error',
+        status: 'skip',
+        title: 'no description to read for marketing language',
       })
-    } else if (description !== '') {
-      push({ id: 'description.marketing', level: 'warn', status: 'pass', title: 'description states what the plugin does' })
+    } else if (marketing.length > 0) {
+      push({
+        id: 'description.marketing',
+        level: 'error',
+        status: 'fail',
+        title: `description uses marketing language (${marketing.join(', ')})`,
+        detail: 'The directory rejects descriptions that praise the plugin instead of stating what it does.',
+        fix: 'Describe the behaviour: what the plugin does, in one line, without superlatives.',
+      })
+    } else {
+      push({ id: 'description.marketing', level: 'error', status: 'pass', title: 'description states what the plugin does' })
     }
 
     const repository = typeof pkg.repository === 'string'
@@ -687,11 +748,22 @@ export async function auditRepository(root, options = {}) {
         detail: `"${repository}" does not contain ${slug}`,
         fix: `Point "repository" at https://github.com/${slug}.`,
       })
+    } else if (slug === null) {
+      push({
+        id: 'packaging.repository',
+        level: 'warn',
+        status: 'fail',
+        title: 'the repository field cannot be confirmed without a GitHub origin remote',
+        detail: `declared: ${repository}`,
+        fix: 'Add the GitHub remote this repository is published from, so the field can be checked against it.',
+      })
     } else {
       push({ id: 'packaging.repository', level: 'warn', status: 'pass', title: 'package.json declares its repository' })
     }
   } else {
     push({ id: 'description.substance', level: 'error', status: 'skip', title: 'no parsed package.json' })
+    push({ id: 'description.marketing', level: 'error', status: 'skip', title: 'no parsed package.json' })
+    push({ id: 'packaging.repository', level: 'warn', status: 'skip', title: 'no parsed package.json' })
   }
 
   const slug = remoteSlug(absoluteRoot)
@@ -743,6 +815,8 @@ export async function auditRepository(root, options = {}) {
   const passed = checks.filter((check) => check.status === 'pass').length
   return {
     root: absoluteRoot,
+    manifestDir,
+    manifestPath: where,
     slug,
     harnessVersion: pkg ? detectHarnessVersion(options) : null,
     checks,

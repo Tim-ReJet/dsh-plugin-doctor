@@ -7,7 +7,7 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { auditRepository, emitEntry, remoteSlug, CATEGORIES } from '../src/audit.js'
+import { auditRepository, emitEntry, findManifestDirectory, remoteSlug, CATEGORIES } from '../src/audit.js'
 import { formatReport } from '../src/report.js'
 
 const USAGE = `dsh-plugin-doctor — check a repository against the dsh-plugin listing rules
@@ -31,7 +31,7 @@ Categories
   ${CATEGORIES.join(', ')}
 
 Exit status
-  0 when no error-level check fails, 1 when one does, 2 on a usage error.
+  0 when no check fails (and, under --strict, no warning fails); 1 when one does; 2 on a usage error.
 
 The audit is read-only: it never writes to the repository. It reads git history for the
 repository-age check, and touches the network only with --network.`
@@ -92,7 +92,8 @@ async function main() {
 
   const root = resolve(options.path ?? '.')
   if (options.emitEntry) {
-    const packagePath = join(root, 'package.json')
+    const manifest = findManifestDirectory(root)
+    const packagePath = join(manifest.directory, 'package.json')
     if (!existsSync(packagePath)) {
       process.stderr.write(`dsh-plugin-doctor: no package.json under ${root}\n`)
       process.exit(2)
@@ -104,15 +105,15 @@ async function main() {
       process.stderr.write(`dsh-plugin-doctor: cannot parse ${packagePath}: ${error instanceof Error ? error.message : String(error)}\n`)
       process.exit(2)
     }
-    const { remoteSlug } = await import('../src/audit.js')
     const slug = remoteSlug(root)
     if (slug === null) {
       process.stderr.write('dsh-plugin-doctor: no GitHub origin remote, so the entry url cannot be built\n')
       process.exit(2)
     }
+    const subdirectory = options.subdirectory ?? (manifest.relative === '.' ? undefined : manifest.relative)
     process.stdout.write(emitEntry(pkg, slug, {
       ...(options.category ? { category: options.category } : {}),
-      ...(options.subdirectory ? { subdirectory: options.subdirectory } : {}),
+      ...(subdirectory ? { subdirectory } : {}),
     }))
     process.exit(0)
   }

@@ -16,6 +16,9 @@ const MARK = { pass: 'ok  ', fail: 'FAIL', skip: 'skip' }
 export function formatReport(result, options = {}) {
   const lines = []
   lines.push(`dsh-plugin-doctor · ${result.root}`)
+  if (result.manifestPath && result.manifestPath !== 'package.json') {
+    lines.push(`manifest: ${result.manifestPath}`)
+  }
   lines.push(`${result.passed} passed · ${result.errors} error${result.errors === 1 ? '' : 's'} · ${result.warnings} warning${result.warnings === 1 ? '' : 's'} · ${result.skipped} skipped`)
   const interesting = result.checks.filter((check) => check.status !== 'pass')
   const shown = options.verbose ? result.checks : interesting

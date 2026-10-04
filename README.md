@@ -10,27 +10,30 @@ read-only: nothing is written to the audited repository, and no network request 
 
 ## What it checks
 
-Thirteen checks always run; two more appear only when their condition exists.
+Up to fifteen checks run. Which ones depends on what the repository declares — a repository with
+no parseable manifest runs fewer — and two run only when their condition exists (a patch outside the
+package directory, a peer range this checker cannot model).
 
 | Check id | Fails as | What it reads |
 | --- | --- | --- |
-| `manifest.package-json` | error | `package.json` exists and parses |
+| `manifest.package-json` | error | the manifest exists and parses — the root package.json, or a subpackage that declares `dsh.bundle` |
 | `manifest.bundle` | error | `dsh.bundle.patch` is declared — a package declaring only `dsh.client` installs nothing installable |
 | `manifest.bundle-patch-file` | error | the declared patch file exists, is a file, is non-empty |
-| `manifest.bundle-patch-location` *(conditional)* | warn | the patch is inside the repository, so it ships in the package |
+| `manifest.bundle-patch-location` *(conditional)* | warn | the patch is inside the package directory, so it ships in the package |
 | `manifest.bundle-patch-rows` | error | the patch is a top-level YAML sequence whose rows are id/name pairs and at least one row names this package |
 | `manifest.peer-dependencies` | warn | no official `@deepseek-ai/*` package sits in `dependencies` instead of `peerDependencies` |
 | `manifest.peer-prerelease` | error | every `@deepseek-ai/dsh*` peer range admits the harness build in use, prerelease gate included; with no detectable harness version it falls back to a structural check and says so |
 | `manifest.peer-range-parsed` *(conditional)* | warn | a peer range uses syntax this checker does not model (it says so instead of guessing) |
-| `repo.age` | error | the first commit is at least one day old, read from git history |
-| `repo.implementation` | error | implementation files exist, reached through `main`, `bin`, `exports`, `files`, or a `src`/`lib`/`index.*` fallback |
+| `repo.age` | error | the oldest root commit is at least one day old, read from git history |
+| `repo.implementation` | error | implementation files exist in the manifest directory, reached through `main`, `bin`, `exports`, `files`, or a `src`/`lib`/`index.*` fallback |
 | `packaging.meta-bundle` | warn | the bundle ships a patch *and* behaviour of its own; a dependency list alone is not listed |
 | `description.substance` | error | `package.json` carries a description |
-| `description.marketing` | warn | the description states what the plugin does rather than praising it |
-| `packaging.repository` | warn | `repository` is declared and points at this repository |
+| `description.marketing` | error | the description states what the plugin does rather than praising it (word-list heuristic) |
+| `packaging.repository` | warn | `repository` is declared and points at this repository, or says it cannot be confirmed without an origin remote |
 | `repo.topic` | error | the GitHub repository carries the `dsh-plugin` topic (needs `--network`, otherwise reported as skipped) |
 
-Every failure names the concrete fix. The CLI exits 1 when any error-level check fails, 0 otherwise.
+Every failure names the concrete fix. The CLI exits 0 when no check fails (and, under `--strict`, no
+warning fails), 1 when one does, and 2 on a usage error.
 
 ## Install
 
@@ -94,8 +97,9 @@ node bin/dsh-plugin-doctor.mjs [path]
 | `--verbose` | list passing checks too |
 | `--emit-entry` | print the `data/plugins/<owner>__<repo>.yml` entry the directory would want |
 
-`--emit-entry` quotes the description when it contains `: `, which YAML would otherwise read as a
-nested key.
+`--emit-entry` always single-quotes and escapes the description, because a bare scalar breaks on a
+colon, on ` #` (silently truncating it) and on a leading YAML indicator such as `@`. In a monorepo it
+points the entry at the subpackage that declares `dsh.bundle`.
 
 ## The prerelease trap this exists for
 
@@ -114,7 +118,7 @@ in the matching branch carries a prerelease tag on the *same* `major.minor.patch
 
 `manifest.peer-prerelease` reports which of the two failures applies. The checker is not a semver
 implementation: it models caret, tilde, hyphen, x-ranges, and comparison operators, and its expected
-answers are pinned to what node-semver itself answered for 91 recorded (range, version) pairs in
+answers are pinned to what node-semver itself answered for 450 recorded (range, version) pairs in
 [`tests/fixtures/node-semver-table.json`](tests/fixtures/node-semver-table.json). Anything it cannot
 parse is reported as `manifest.peer-range-parsed` instead of being guessed at.
 
@@ -124,6 +128,11 @@ parse is reported as `manifest.peer-range-parsed` instead of being guessed at.
   for, and no checker replaces it. Do not treat a clean run as that review.
 - **Security.** Being listed is not a security review, and neither is this. The audit reads
   manifests and structure, not behaviour.
+- **The rest of the submission surface**: the entry file beyond what `--emit-entry` prints,
+  `screenshots.json` rules, tarball hosting rules, and whether a bundle's dependencies point at the
+  original author's repository rather than a re-upload.
+- **Whether the code is real rather than a stub.** A file that exports nothing still counts as an
+  implementation file here.
 - **Whether the category fits**, or whether the plugin duplicates an existing entry.
 - **Whether the project is actively maintained.** The directory's periodic scan flags repositories
   that are gone, archived, or long dormant; this audit reads one moment in time.
@@ -131,15 +140,18 @@ parse is reported as `manifest.peer-range-parsed` instead of being guessed at.
 
 ## Verification
 
-- `npm test` runs 32 tests on `node:test`, with no runtime dependencies and no network: fixtures are
-  throwaway repositories in the temp directory, and the prerelease gate is checked against the
-  recorded node-semver table.
-- The repository audits itself cleanly (`npm run doctor`), which is also one of the tests.
+- `npm test` runs 40 tests on `node:test` with no network: fixtures are throwaway repositories in the
+  temp directory, and the prerelease gate is checked against the recorded node-semver table. The
+  package declares no `dependencies` — the audit engine and CLI need none; the host plugin needs its
+  declared peers, and the four host-plugin tests skip when those peers are not resolvable.
+- The repository audits itself to zero errors apart from `repo.age`, which fails until the repository
+  is a day old — the directory's own rule. `npm run doctor` therefore exits 1 today and 0 tomorrow; a
+  test covers the same run with the clock moved past the gate.
 - End to end, in a real harness with the plugin composed and a model calling the tool: verified on
   harness `0.1.1-rc.2` and `0.2.0-rc.2`, the two lines its peer range names.
-- The install path is exercised the way a user takes it: `dsh plugin --profile <name> add
-  github:Tim-ReJet/dsh-plugin-doctor` resolves this repository, appends the bundle layer, and the
-  installed copy boots in a real harness with its peer dependencies resolved by the profile.
+- The install path was walked by hand on 2026-10-04 and is reproducible with `npm run verify:install`
+  (network required): it installs `github:Tim-ReJet/dsh-plugin-doctor` into a throwaway profile,
+  checks the bundle layer composed, and removes the profile. No automated test covers it.
 
 ## Peer dependencies
 

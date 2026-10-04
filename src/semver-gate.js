@@ -131,8 +131,11 @@ function expandToken(token) {
   if (operator === '^') {
     const base = lower(major, minor ?? 0, patch ?? 0)
     if (major > 0) return [{ op: '>=', version: base }, { op: '<', version: upperBound(major + 1, 0, 0) }]
-    if ((minor ?? 0) > 0) return [{ op: '>=', version: base }, { op: '<', version: upperBound(0, (minor ?? 0) + 1, 0) }]
-    return [{ op: '>=', version: base }, { op: '<', version: upperBound(0, 0, (patch ?? 0) + 1) }]
+    // Below 1.0.0 caret pins the first non-zero field: ^0.x allows any 0.x, ^0.0.x allows 0.0.x,
+    // ^0.0.3 allows 0.0.3 only (up to 0.0.4-0).
+    if (minor === null) return [{ op: '>=', version: base }, { op: '<', version: upperBound(1, 0, 0) }]
+    if (minor > 0 || patch === null) return [{ op: '>=', version: base }, { op: '<', version: upperBound(0, minor + 1, 0) }]
+    return [{ op: '>=', version: base }, { op: '<', version: upperBound(0, 0, patch + 1) }]
   }
 
   if (operator === '~') {
@@ -152,14 +155,14 @@ function expandToken(token) {
   }
 
   if (minor === null || patch === null) {
-    // `>=0.1` and friends: treat the missing fields as the lowest value of that tuple.
+    // `>=0.1` and friends: a missing field is an x-range for `=` and the lowest value otherwise.
     const base = lower(major, minor ?? 0, patch ?? 0)
     const next = minor === null ? upperBound(major + 1, 0, 0) : upperBound(major, minor + 1, 0)
     if (operator === '>=') return [{ op: '>=', version: base }]
     if (operator === '>') return [{ op: '>=', version: next }]
     if (operator === '<') return [{ op: '<', version: base }]
     if (operator === '<=') return [{ op: '<', version: next }]
-    return [{ op: '=', version: base }]
+    return [{ op: '>=', version: base }, { op: '<', version: next }]
   }
 
   return [{ op: operator, version: lower(major, minor, patch) }]
@@ -174,8 +177,11 @@ function expandToken(token) {
  */
 export function parseRange(range) {
   if (typeof range !== 'string' || range.trim() === '') return null
+  // `>= 0.1.1-rc.1 < 0.1.2-0` is valid node-semver: the operator and its version may be separated
+  // by whitespace, which would otherwise look like a bare operator token.
+  const normalised = range.replace(/(\^|~|>=|<=|>|<|=)\s+/g, '$1')
   const branches = []
-  for (const branch of range.split('||')) {
+  for (const branch of normalised.split('||')) {
     const trimmed = branch.trim()
     if (trimmed === '') return null
     const hyphen = /^(\S+)\s+-\s+(\S+)$/.exec(trimmed)
@@ -262,7 +268,10 @@ export function prereleaseGate(range, harnessVersion) {
   const candidate = parseVersion(harnessVersion)
   if (!candidate) return { status: 'unknown', reason: 'unparseable-version' }
   if (candidate.prerelease.length === 0) {
-    return { status: 'ok', note: `harness ${candidate.raw} is a release, which the prerelease gate does not restrict` }
+    // A release harness is exempt from the prerelease gate, but the comparators must still admit it.
+    return satisfiesParsedRange(branches, candidate)
+      ? { status: 'ok', note: `harness ${candidate.raw} is a release and the range admits it` }
+      : { status: 'fail', reason: 'comparators-not-satisfied' }
   }
   if (satisfiesParsedRange(branches, candidate)) return { status: 'ok' }
   if (!hasPrereleaseComparator) return { status: 'fail', reason: 'no-prerelease-comparator' }

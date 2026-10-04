@@ -49,6 +49,26 @@ function fixture(files, options = {}) {
   return root
 }
 
+/**
+ * Add a commit to a fixture repository.
+ * @param {string} root - fixture root.
+ * @param {string} iso - committer/author date for the commit.
+ * @param {string} message - commit message.
+ */
+function gitCommit(root, iso, message) {
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'fixture',
+    GIT_AUTHOR_EMAIL: 'fixture@example.com',
+    GIT_COMMITTER_NAME: 'fixture',
+    GIT_COMMITTER_EMAIL: 'fixture@example.com',
+    GIT_AUTHOR_DATE: iso,
+    GIT_COMMITTER_DATE: iso,
+  }
+  execFileSync('git', ['add', '-A'], { cwd: root, env })
+  execFileSync('git', ['commit', '-qm', message], { cwd: root, env })
+}
+
 const GOOD_PATCH = '- insert:\n    - id: example\n      name: dsh-example\n'
 const GOOD_CODE = { 'src/index.js': 'export const name = "example"\n\nexport function apply() {}\n' }
 const GOOD_PKG = {
@@ -75,7 +95,10 @@ function goodPackage(overrides = {}) {
 }
 
 test('a healthy repository passes with no errors and no warnings', async () => {
-  const root = fixture({ 'package.json': goodPackage(), 'cordis.patch.yml': GOOD_PATCH, ...GOOD_CODE })
+  const root = fixture(
+    { 'package.json': goodPackage(), 'cordis.patch.yml': GOOD_PATCH, ...GOOD_CODE },
+    { git: true, commitISO: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(), remote: 'https://github.com/acme/dsh-example.git' },
+  )
   const result = await auditRepository(root, { harnessVersion: '0.1.1-rc.2' })
   assert.equal(result.errors, 0, formatReport(result))
   assert.equal(result.warnings, 0, formatReport(result))
@@ -158,22 +181,34 @@ test('an official package in dependencies is a warning, and strict mode fails th
   const result = await auditRepository(root, { harnessVersion: '0.1.1-rc.2' })
   assert.equal(check(result, 'manifest.peer-dependencies').status, 'fail')
   assert.equal(result.errors, 0)
-  assert.equal(result.warnings, 1)
+  assert.ok(result.warnings >= 1, 'the misplaced dependency must be reported as a warning')
   assert.equal(result.ok, true)
   const strict = await auditRepository(root, { harnessVersion: '0.1.1-rc.2', strict: true })
   assert.equal(strict.ok, false)
 })
 
-test('marketing language in the description is a warning', async () => {
+test('marketing language in the description fails the run', async () => {
   const root = fixture({
-    'package.json': goodPackage({ description: 'The ultimate best-in-class plugin, seamlessly blazing fast.' }),
+    'package.json': goodPackage({ description: 'The most powerful, amazingly easy and truly next-generation plugin you will ever need.' }),
     'cordis.patch.yml': GOOD_PATCH,
     ...GOOD_CODE,
   })
   const result = await auditRepository(root, { harnessVersion: '0.1.1-rc.2' })
   const marketing = check(result, 'description.marketing')
   assert.equal(marketing.status, 'fail')
-  assert.match(marketing.title, /best|blazing|seamless|ultimate/)
+  assert.match(marketing.title, /powerful|amazing|next-generation/)
+  assert.equal(result.errors, 1)
+  assert.equal(result.ok, false)
+})
+
+test('marketing matching respects word boundaries', async () => {
+  const root = fixture({
+    'package.json': goodPackage({ description: 'Reads the bestowal log and the rebels file.' }),
+    'cordis.patch.yml': GOOD_PATCH,
+    ...GOOD_CODE,
+  })
+  const result = await auditRepository(root, { harnessVersion: '0.1.1-rc.2' })
+  assert.equal(check(result, 'description.marketing').status, 'pass')
 })
 
 test('a bundle with a patch but no code is both an error and the meta-package warning', async () => {
@@ -183,7 +218,7 @@ test('a bundle with a patch but no code is both an error and the meta-package wa
   assert.equal(check(result, 'packaging.meta-bundle').status, 'fail')
 })
 
-test('repository age is read from git history', async () => {
+test('repository age is read from the oldest root commit, not from HEAD', async () => {
   const old = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString()
   const oldRoot = fixture({ 'package.json': goodPackage(), 'cordis.patch.yml': GOOD_PATCH, ...GOOD_CODE }, { git: true, commitISO: old })
   const oldResult = await auditRepository(oldRoot, { harnessVersion: '0.1.1-rc.2' })
@@ -192,6 +227,30 @@ test('repository age is read from git history', async () => {
   const freshRoot = fixture({ 'package.json': goodPackage(), 'cordis.patch.yml': GOOD_PATCH, ...GOOD_CODE }, { git: true })
   const freshResult = await auditRepository(freshRoot)
   assert.equal(check(freshResult, 'repo.age').status, 'fail')
+
+  // An old repository with a commit in the last day is the case the previous git invocation got
+  // wrong: `git log --reverse -n 1` returns HEAD, because git applies -n before --reverse.
+  const activeRoot = fixture({ 'package.json': goodPackage(), 'cordis.patch.yml': GOOD_PATCH, ...GOOD_CODE }, { git: true, commitISO: old })
+  writeFileSync(join(activeRoot, 'src/index.js'), 'export const name = "example"\n// touched today\n')
+  gitCommit(activeRoot, new Date().toISOString(), 'touch')
+  const activeResult = await auditRepository(activeRoot, { harnessVersion: '0.1.1-rc.2' })
+  const age = check(activeResult, 'repo.age')
+  assert.equal(age.status, 'pass', formatReport(activeResult))
+  assert.match(age.title, /day/)
+})
+
+test('a monorepo subpackage declaring dsh.bundle is audited, not the empty root', async () => {
+  const root = fixture({
+    'package.json': { name: 'monorepo', private: true },
+    'packages/plugin/package.json': goodPackage({ name: 'dsh-subpackage', repository: undefined }),
+    'packages/plugin/cordis.patch.yml': '- insert:\n    - id: sub\n      name: dsh-subpackage\n',
+    'packages/plugin/src/index.js': 'export function apply() {}\n',
+  })
+  const result = await auditRepository(root, { harnessVersion: '0.1.1-rc.2' })
+  assert.equal(result.errors, 0, formatReport(result, { verbose: true }))
+  assert.equal(result.manifestPath, 'packages/plugin/package.json')
+  assert.equal(check(result, 'manifest.bundle').status, 'pass')
+  assert.equal(check(result, 'repo.implementation').status, 'pass')
 })
 
 test('the topic check reads GitHub and reports a missing topic', async () => {
@@ -228,7 +287,7 @@ test('the topic check reads GitHub and reports a missing topic', async () => {
   assert.equal(check(brokenResult, 'repo.topic').status, 'skip')
 })
 
-test('a patch kept outside the repository is a warning, not a pass', async () => {
+test('a patch kept outside the package directory is a warning, not a pass', async () => {
   const root = fixture({
     'package.json': goodPackage({ dsh: { bundle: { patch: '../outside.yml' } } }),
     ...GOOD_CODE,
@@ -237,7 +296,7 @@ test('a patch kept outside the repository is a warning, not a pass', async () =>
   const result = await auditRepository(root, { harnessVersion: '0.1.1-rc.2' })
   const location = check(result, 'manifest.bundle-patch-location')
   assert.equal(location.status, 'fail')
-  assert.match(location.title, /outside the repository/)
+  assert.match(location.title, /outside the package directory/)
   assert.equal(result.errors, 0)
 })
 
@@ -263,6 +322,52 @@ test('the gh path reads topics per line instead of mistaking a JSON array for on
   assert.deepEqual(none, { topics: [] })
 })
 
+test('a patch row that merely contains the package name is rejected', async () => {
+  const root = fixture({
+    'package.json': goodPackage(),
+    'cordis.patch.yml': '- insert:\n    - id: copycat\n      name: my-dsh-example-copycat-fork\n',
+    ...GOOD_CODE,
+  })
+  const result = await auditRepository(root)
+  const rows = check(result, 'manifest.bundle-patch-rows')
+  assert.equal(rows.status, 'fail')
+  assert.match(rows.title, /no patch row references this package/)
+  assert.equal(result.ok, false)
+})
+
+test('a spaced operator range is modelled, not reported as unknown syntax', async () => {
+  const root = fixture({
+    'package.json': goodPackage({ peerDependencies: { '@deepseek-ai/dsh-tools': '>= 0.1.1-rc.1 < 0.1.2-0' } }),
+    'cordis.patch.yml': GOOD_PATCH,
+    ...GOOD_CODE,
+  })
+  const result = await auditRepository(root, { harnessVersion: '0.1.1-rc.2' })
+  assert.equal(result.checks.find((entry) => entry.id === 'manifest.peer-range-parsed'), undefined)
+  assert.equal(check(result, 'manifest.peer-prerelease').status, 'pass')
+})
+
+test('a release harness version still has to satisfy the range', async () => {
+  const root = fixture({
+    'package.json': goodPackage({ peerDependencies: { '@deepseek-ai/dsh-tools': '^99.0.0' } }),
+    'cordis.patch.yml': GOOD_PATCH,
+    ...GOOD_CODE,
+  })
+  const result = await auditRepository(root, { harnessVersion: '0.2.0' })
+  const peer = check(result, 'manifest.peer-prerelease')
+  assert.equal(peer.status, 'fail')
+  assert.match(peer.title, /cannot admit 0\.2\.0/)
+  assert.equal(result.ok, false)
+})
+
+test('a repository field with no origin remote to confirm it is a warning', async () => {
+  const root = fixture({ 'package.json': goodPackage(), 'cordis.patch.yml': GOOD_PATCH, ...GOOD_CODE })
+  const result = await auditRepository(root, { harnessVersion: '0.1.1-rc.2' })
+  const repository = check(result, 'packaging.repository')
+  assert.equal(repository.status, 'fail')
+  assert.match(repository.title, /cannot be confirmed/)
+  assert.equal(result.errors, 0)
+})
+
 test('offline runs say the topic was not checked instead of implying it passed', async () => {
   const root = fixture({ 'package.json': goodPackage(), 'cordis.patch.yml': GOOD_PATCH, ...GOOD_CODE })
   const result = await auditRepository(root)
@@ -275,6 +380,8 @@ test('the engine audits its own repository cleanly', async () => {
   const root = new URL('..', import.meta.url).pathname
   const result = await auditRepository(root, {
     harnessVersion: '0.1.1-rc.2',
+    // The clock override exists for repo.age only: the directory requires a repository at least a
+    // day old, which this one is not yet. Without --now, `npm run doctor` reports that one error.
     now: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
   })
   assert.equal(result.errors, 0, formatReport(result, { verbose: true }))
@@ -317,4 +424,21 @@ test('the catalog entry quotes a description that contains a colon', () => {
   assert.match(entry, /^name: acme\/dsh-example$/m)
   assert.match(entry, /^category: dev$/m)
   assert.match(entry, /^  en: 'Audit tools: manifests and topics\.'$/m)
+})
+
+test('the catalog entry quotes indicators and comments that would corrupt the scalar', () => {
+  // Each of these broke a bare scalar: ' #' silently truncates, a leading '@' is a YAML error.
+  const hash = emitEntry({ description: 'Audit dsh plugins #1 for listing readiness.' }, 'acme/dsh-example', {})
+  assert.match(hash, /^  en: 'Audit dsh plugins #1 for listing readiness\.'$/m)
+  const at = emitEntry({ description: '@acme audit tool for dsh plugins.' }, 'acme/dsh-example', {})
+  assert.match(at, /^  en: '@acme audit tool for dsh plugins\.'$/m)
+  const apostrophe = emitEntry({ description: "It's the maintainer's audit." }, 'acme/dsh-example', {})
+  assert.match(apostrophe, /^  en: 'It''s the maintainer''s audit\.'$/m)
+})
+
+test('a subpackage entry points at the subdirectory', () => {
+  const entry = emitEntry({ description: 'One plugin in a monorepo.' }, 'acme/monorepo', { subdirectory: 'packages/plugin' })
+  assert.match(entry, /^url: https:\/\/github\.com\/acme\/monorepo\/tree\/main\/packages\/plugin$/m)
+  assert.match(entry, /^name: acme\/monorepo#plugin$/m)
+  assert.match(entry, /^# data\/plugins\/acme__monorepo--packages-plugin\.yml$/m)
 })
