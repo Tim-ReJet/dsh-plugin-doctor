@@ -20,7 +20,7 @@ Thirteen checks always run; two more appear only when their condition exists.
 | `manifest.bundle-patch-location` *(conditional)* | warn | the patch is inside the repository, so it ships in the package |
 | `manifest.bundle-patch-rows` | error | the patch is a top-level YAML sequence whose rows are id/name pairs and at least one row names this package |
 | `manifest.peer-dependencies` | warn | no official `@deepseek-ai/*` package sits in `dependencies` instead of `peerDependencies` |
-| `manifest.peer-prerelease` | error | every `@deepseek-ai/dsh*` peer range admits the harness build in use, prerelease gate included |
+| `manifest.peer-prerelease` | error | every `@deepseek-ai/dsh*` peer range admits the harness build in use, prerelease gate included; with no detectable harness version it falls back to a structural check and says so |
 | `manifest.peer-range-parsed` *(conditional)* | warn | a peer range uses syntax this checker does not model (it says so instead of guessing) |
 | `repo.age` | error | the first commit is at least one day old, read from git history |
 | `repo.implementation` | error | implementation files exist, reached through `main`, `bin`, `exports`, `files`, or a `src`/`lib`/`index.*` fallback |
@@ -87,7 +87,7 @@ node bin/dsh-plugin-doctor.mjs [path]
 | Flag | Effect |
 | --- | --- |
 | `--strict` | count warnings as failures in the exit status |
-| `--network` | verify the `dsh-plugin` GitHub topic (one GitHub API request, via `gh` or `GH_TOKEN`) |
+| `--network` | verify the `dsh-plugin` GitHub topic (a GitHub request, via `gh` or `GH_TOKEN`) |
 | `--harness-version <version>` | test peer ranges against this harness build instead of detecting one |
 | `--now <iso-date>` | clock override for the repository-age check (testing aid) |
 | `--json` | print the whole result as JSON |
