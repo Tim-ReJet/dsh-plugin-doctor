@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { auditRepository, emitEntry, implementationFiles, scanPatchRows } from '../src/audit.js'
+import { auditRepository, emitEntry, fetchTopics, implementationFiles, scanPatchRows } from '../src/audit.js'
 import { formatReport } from '../src/report.js'
 
 const created = []
@@ -226,6 +226,15 @@ test('the topic check reads GitHub and reports a missing topic', async () => {
     fetchImpl: async () => { throw new Error('offline') },
   })
   assert.equal(check(brokenResult, 'repo.topic').status, 'skip')
+})
+
+test('the gh path reads topics per line instead of mistaking a JSON array for one topic', async () => {
+  const oneLineArray = await fetchTopics('acme/dsh-example', { execFileImpl: () => '["cordis-plugin","dsh-plugin"]' })
+  assert.deepEqual(oneLineArray, { topics: ['cordis-plugin', 'dsh-plugin'] })
+  const perLine = await fetchTopics('acme/dsh-example', { execFileImpl: () => 'dsh\ndsh-plugin\n' })
+  assert.deepEqual(perLine, { topics: ['dsh', 'dsh-plugin'] })
+  const none = await fetchTopics('acme/dsh-example', { execFileImpl: () => '' })
+  assert.deepEqual(none, { topics: [] })
 })
 
 test('offline runs say the topic was not checked instead of implying it passed', async () => {

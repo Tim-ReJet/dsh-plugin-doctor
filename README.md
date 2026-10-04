@@ -129,7 +129,7 @@ parse is reported as `manifest.peer-range-parsed` instead of being guessed at.
 
 ## Verification
 
-- `npm test` runs 29 tests on `node:test`, with no runtime dependencies and no network: fixtures are
+- `npm test` runs 30 tests on `node:test`, with no runtime dependencies and no network: fixtures are
   throwaway repositories in the temp directory, and the prerelease gate is checked against the
   recorded node-semver table.
 - The repository audits itself cleanly (`npm run doctor`), which is also one of the tests.

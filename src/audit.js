@@ -204,13 +204,17 @@ export function detectHarnessVersion(options = {}) {
 export async function fetchTopics(slug, options = {}) {
   const run = options.execFileImpl ?? execFileSync
   try {
-    const output = run('gh', ['api', `repos/${slug}`, '--jq', '.topics'], {
+    // `.topics[]` streams one bare topic per line; `.topics` would echo the JSON array as one
+    // string, which is how this check once reported a present topic as missing.
+    const output = run('gh', ['api', `repos/${slug}`, '--jq', '.topics[]'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
-    const topics = output.split(/\s+/).filter(Boolean)
-    if (topics.length > 0) return { topics }
-    return { topics: [] }
+    if (output.startsWith('[')) {
+      const parsed = JSON.parse(output)
+      return { topics: Array.isArray(parsed) ? parsed.map(String) : [] }
+    }
+    return { topics: output === '' ? [] : output.split('\n').map((line) => line.trim().replace(/^"|"$/g, '')).filter(Boolean) }
   } catch {
     // Fall through to the REST API.
   }
