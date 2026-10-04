@@ -125,6 +125,8 @@ parse is reported as `manifest.peer-range-parsed` instead of being guessed at.
 - **Security.** Being listed is not a security review, and neither is this. The audit reads
   manifests and structure, not behaviour.
 - **Whether the category fits**, or whether the plugin duplicates an existing entry.
+- **Whether the project is actively maintained.** The directory's periodic scan flags repositories
+  that are gone, archived, or long dormant; this audit reads one moment in time.
 - **npm publication and download counts.** Listing does not depend on them.
 
 ## Verification
