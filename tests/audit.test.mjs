@@ -228,6 +228,32 @@ test('the topic check reads GitHub and reports a missing topic', async () => {
   assert.equal(check(brokenResult, 'repo.topic').status, 'skip')
 })
 
+test('a patch kept outside the repository is a warning, not a pass', async () => {
+  const root = fixture({
+    'package.json': goodPackage({ dsh: { bundle: { patch: '../outside.yml' } } }),
+    ...GOOD_CODE,
+  })
+  writeFileSync(join(root, '..', 'outside.yml'), GOOD_PATCH)
+  const result = await auditRepository(root, { harnessVersion: '0.1.1-rc.2' })
+  const location = check(result, 'manifest.bundle-patch-location')
+  assert.equal(location.status, 'fail')
+  assert.match(location.title, /outside the repository/)
+  assert.equal(result.errors, 0)
+})
+
+test('a peer range this checker cannot model is warned about, never silently dropped', async () => {
+  const root = fixture({
+    'package.json': goodPackage({ peerDependencies: { '@deepseek-ai/dsh-tools': 'latest' } }),
+    'cordis.patch.yml': GOOD_PATCH,
+    ...GOOD_CODE,
+  })
+  const result = await auditRepository(root, { harnessVersion: '0.1.1-rc.2' })
+  assert.equal(check(result, 'manifest.peer-range-parsed').status, 'fail')
+  assert.equal(check(result, 'manifest.peer-prerelease').status, 'skip')
+  assert.equal(result.checks.length, 14, 'a skipped check must still be reported, alongside the parse warning')
+  assert.equal(result.errors, 0)
+})
+
 test('the gh path reads topics per line instead of mistaking a JSON array for one topic', async () => {
   const oneLineArray = await fetchTopics('acme/dsh-example', { execFileImpl: () => '["cordis-plugin","dsh-plugin"]' })
   assert.deepEqual(oneLineArray, { topics: ['cordis-plugin', 'dsh-plugin'] })

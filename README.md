@@ -131,12 +131,15 @@ parse is reported as `manifest.peer-range-parsed` instead of being guessed at.
 
 ## Verification
 
-- `npm test` runs 30 tests on `node:test`, with no runtime dependencies and no network: fixtures are
+- `npm test` runs 32 tests on `node:test`, with no runtime dependencies and no network: fixtures are
   throwaway repositories in the temp directory, and the prerelease gate is checked against the
   recorded node-semver table.
 - The repository audits itself cleanly (`npm run doctor`), which is also one of the tests.
 - End to end, in a real harness with the plugin composed and a model calling the tool: verified on
   harness `0.1.1-rc.2` and `0.2.0-rc.2`, the two lines its peer range names.
+- The install path is exercised the way a user takes it: `dsh plugin --profile <name> add
+  github:Tim-ReJet/dsh-plugin-doctor` resolves this repository, appends the bundle layer, and the
+  installed copy boots in a real harness with its peer dependencies resolved by the profile.
 
 ## Peer dependencies
 

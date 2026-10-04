@@ -529,7 +529,6 @@ export async function auditRepository(root, options = {}) {
           : `${dshPeers.length} harness peer range(s) name a prerelease comparator`,
       })
     } else if (findings.length > 0) {
-      const first = findings[0]
       const reasons = {
         'no-prerelease-comparator': 'no comparator in the range carries a prerelease tag, so every prerelease harness build is excluded',
         'no-comparator-on-tuple': `no comparator carries a prerelease tag on the ${harnessVersion} tuple, so node-semver silently excludes it`,
@@ -544,6 +543,15 @@ export async function auditRepository(root, options = {}) {
           .map((finding) => `${finding.dependency}: "${finding.range}" — ${reasons[finding.reason] ?? finding.reason}`)
           .join('; '),
         fix: 'Add an explicit "||" branch that puts a prerelease tag on the matching tuple, e.g. ">=0.1.1-rc.1 <0.1.2-0".',
+      })
+    } else {
+      push({
+        id: 'manifest.peer-prerelease',
+        level: 'error',
+        status: 'skip',
+        title: `no harness peer range could be modelled (${unparseable.length})`,
+        detail: unparseable.map((entry) => `${entry.dependency}: "${entry.range}"`).join('; '),
+        fix: 'Write a range this checker models, or test it against the harness build you target by hand.',
       })
     }
     if (unparseable.length > 0) {
